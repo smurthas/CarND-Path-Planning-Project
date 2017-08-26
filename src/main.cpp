@@ -5,17 +5,20 @@
 #include <iostream>
 #include <thread>
 #include <vector>
-#include "Eigen-3.3/Eigen/Core"
+/*#include "Eigen-3.3/Eigen/Core"
 #include "Eigen-3.3/Eigen/QR"
-#include "Eigen-3.3/Eigen/LU"
+#include "Eigen-3.3/Eigen/LU"*/
 #include "json.hpp"
-#include "spline.h"
+
+#include "map.h"
+#include "planner.h"
 
 using namespace std;
-using namespace Eigen;
+//using namespace Eigen;
 
 // for convenience
 using json = nlohmann::json;
+const double DT = 0.02; // 20 ms
 
 // For converting back and forth between radians and degrees.
 constexpr double pi() { return M_PI; }
@@ -124,18 +127,6 @@ vector<double> getFrenet(double x, double y, double theta, vector<double> maps_x
 
 }
 
-vector<double> get_cartesian(double s, double d, tk::spline spline_x, tk::spline spline_y) {
-  double x0 = spline_x(s);
-  double y0 = spline_y(s);
-  double ds = 0.001;
-  double x1 = spline_x(s+ds);
-  double y1 = spline_y(s+ds);
-  double d_heading = atan2(y1-y0, x1-x0) - M_PI/2.0;
-  double x = x0 + cos(d_heading)*d;
-  double y = y0 + sin(d_heading)*d;
-  return { x, y };
-}
-
 // Transform from Frenet s,d coordinates to Cartesian x,y
 vector<double> getXY(double s, double d, vector<double> maps_s, vector<double> maps_x, vector<double> maps_y) {
   int prev_wp = -1;
@@ -162,61 +153,34 @@ vector<double> getXY(double s, double d, vector<double> maps_s, vector<double> m
 
 }
 
-double eval_poly(vector<double> coeffs, double x) {
-  double y = 0;
-  for (int i = 0; i < coeffs.size(); i++) {
-    y += coeffs[i] * pow(x, i);
-  }
+Pose get_pose(double x, double y, double speed, double yaw) {
+  cout << "get_pose 0" << endl;
+  Pose pose;
+  pose.x = x;
+  pose.y = y;
+  pose.x_dot = cos(yaw)*speed;
+  pose.y_dot = sin(yaw)*speed;
+  pose.x_ddot = 0;
+  pose.y_ddot = 0;
 
-  return y;
+  return pose;
 }
 
-vector<double> JMT(vector< double> start, vector <double> end, double T) {
-  double s_i = start[0];
-  double s_dot_i = start[1];
-  double s_ddot_i = start[2];
-  double s_f = end[0];
-  double s_dot_f = end[1];
-  double s_ddot_f = end[2];
-  VectorXd esses(3);
-  esses << (s_f - (s_i + s_dot_i*T + 0.5*s_ddot_i*T*T)),
-           (s_dot_f - (s_dot_i + s_ddot_i*T)),
-           (s_ddot_f - s_ddot_i);
+Pose get_pose(vector<double> x, vector<double> y) {
+  cout << "get_pose 1" << endl;
+  Pose pose;
 
-  MatrixXd Ts(3, 3);
-  double T_2 = T*T;
-  double T_3 = T_2*T;
-  double T_4 = T_3*T;
-  double T_5 = T_4*T;
-  Ts << T_3,    T_4,    T_5,
-      3*T_2,  4*T_3,  5*T_4,
-        6*T, 12*T_2, 20*T_3;
-  VectorXd As = Ts.inverse() * esses;
+  double prev_x_dot = (double(x[1]) - double(x[0])) / DT;
+  pose.x = x[2];
+  pose.x_dot = (double(x[2]) - double(x[1])) / DT;
+  pose.x_ddot = (pose.x_dot - prev_x_dot) / DT;
 
-  return {s_i, s_dot_i, 0.5*s_ddot_i, As[0], As[1], As[2]};
-  /*
-  Calculate the Jerk Minimizing Trajectory that connects the initial state
-  to the final state in time T.
+  double prev_y_dot = (double(y[1]) - double(y[0])) / DT;
+  pose.y = y[2];
+  pose.y_dot = (double(y[2]) - double(y[1])) / DT;
+  pose.y_ddot = (pose.y_dot - prev_y_dot) / DT;
 
-  INPUTS
-
-  start - the vehicles start location given as a length three array
-      corresponding to initial values of [s, s_dot, s_double_dot]
-
-  end   - the desired end state for vehicle. Like "start" this is a
-      length three array.
-
-  T     - The duration, in seconds, over which this maneuver should occur.
-
-  OUTPUT
-  an array of length 6, each value corresponding to a coefficent in the polynomial
-  s(t) = a_0 + a_1 * t + a_2 * t**2 + a_3 * t**3 + a_4 * t**4 + a_5 * t**5
-
-  EXAMPLE
-
-  > JMT( [0, 10, 0], [10, 10, 0], 1)
-  [0.0, 10.0, 0.0, 0.0, 0.0, 0.0]
- */
+  return pose;
 }
 
 int main() {
@@ -255,14 +219,13 @@ int main() {
     map_waypoints_dx.push_back(d_x);
     map_waypoints_dy.push_back(d_y);
   }
+  Map map(map_waypoints_x, map_waypoints_y, map_waypoints_s);
+  Planner planner(map, DT);
+  Predictor predictor(map);
 
-  tk::spline spline_x;
-  spline_x.set_points(map_waypoints_s, map_waypoints_x);
+  double GOAL_SPEED = 2; // m/s
 
-  tk::spline spline_y;
-  spline_y.set_points(map_waypoints_s, map_waypoints_y);
-
-  h.onMessage([&map_waypoints_x,&map_waypoints_y,&map_waypoints_s,&map_waypoints_dx,&map_waypoints_dy,&spline_x,&spline_y](uWS::WebSocket<uWS::SERVER> ws, char *data, size_t length,
+  h.onMessage([&GOAL_SPEED,&predictor,&planner,&map_waypoints_x,&map_waypoints_y,&map_waypoints_s,&map_waypoints_dx,&map_waypoints_dy,&map](uWS::WebSocket<uWS::SERVER> ws, char *data, size_t length,
                      uWS::OpCode opCode) {
     // "42" at the start of the message means there's a websocket message event.
     // The 4 signifies a websocket message
@@ -288,7 +251,6 @@ int main() {
           double car_d = j[1]["d"];
           double car_yaw = deg2rad(j[1]["yaw"]);
           double car_speed = double(j[1]["speed"]) * 0.44704;
-          //cout << "car_speed: " << car_speed << endl;
 
           // Previous path data given to the Planner
           auto previous_path_x = j[1]["previous_path_x"];
@@ -297,106 +259,73 @@ int main() {
           double end_path_s = j[1]["end_path_s"];
           double end_path_d = j[1]["end_path_d"];
 
+
           // Sensor Fusion Data, a list of all other cars on the same side of the road.
           auto sensor_fusion = j[1]["sensor_fusion"];
+
+          vector<PredictedObject> predictions = predictor.get_predictions(sensor_fusion);
+
+          // TODO: move this to planner
+          /*vector<double> next_vehicle = { 100, 100, 100 };
+          for (auto vehicle : sensor_fusion) {
+            double s = vehicle[5];
+            double d = vehicle[6];
+            int lane = d / 4;
+            double s_ahead = s-car_s;
+            if (s_ahead > 0 && s_ahead < next_vehicle[lane]) {
+              next_vehicle[lane] = s_ahead;;
+            }
+          }
+
+          cout << "next vehicles: " << next_vehicle[0] << ',' << next_vehicle[1] << ',' << next_vehicle[2] << endl;
+          int current_lane = car_d / 4;
+          int goal_lane = current_lane;
+          double buffer = 30;
+          double change_min = 40;
+          if (next_vehicle[current_lane] < buffer) {
+            GOAL_SPEED -= 0.04;
+          } else if (GOAL_SPEED < 20) {
+            GOAL_SPEED += 0.03;
+          }
+
+          if (next_vehicle[1] > buffer) {
+            // prefer middle lane if room
+            goal_lane = 1;
+          } else if (current_lane == 1) {
+            if (next_vehicle[0] > change_min) {
+              goal_lane = 0;
+            } else if (next_vehicle[2] > change_min) {
+              goal_lane = 2;
+            }
+          }*/
 
           json msgJson;
           vector<double> next_x_vals = {car_x};
           vector<double> next_y_vals = {car_y};
 
-          const double DT = 0.02; // 20 ms
-          const double GOAL_SPEED = 15; // m/s
-
 
           // TODO: pick a lane
-          double d = 6;
+          //double target_d = goal_lane * 4 + 2;
+          //double d = target_d; // + car_d) / 2.0;
 
-          double last_x = car_x;
-          double last_x_dot = car_speed*cos(car_yaw);
-          double last_x_ddot = 0;
-          if (previous_path_x.size() > 2) {
-            last_x = previous_path_x[2];
-            last_x_dot = (double(previous_path_x[2]) - double(previous_path_x[1])) / DT;
-            double prev_x_dot = (double(previous_path_x[1]) - double(previous_path_x[0])) / DT;
-            last_x_ddot = (last_x_dot - prev_x_dot) / DT;
+          Pose planning_pose = get_pose(car_x, car_y, car_speed, car_yaw);
+          planning_pose.s = car_s;
+
+          if (previous_path_x.size() > 2 && previous_path_y.size() > 2) {
             next_x_vals = {previous_path_x[0], previous_path_x[1], previous_path_x[2]};
-          } else {
-            cout << "WARNING: previous_path_x.size(): " << previous_path_x.size() << endl;
-          }
-
-          double last_y = car_y;
-          double last_y_dot = car_speed*sin(car_yaw);
-          double last_y_ddot = 0;
-          if (previous_path_y.size() > 2) {
-            last_y = previous_path_y[2];
-            last_y_dot = (double(previous_path_y[2]) - double(previous_path_y[1])) / DT;
-            double prev_y_dot = (double(previous_path_y[1]) - double(previous_path_y[0])) / DT;
-            last_y_ddot = (last_y_dot - prev_y_dot) / DT;
             next_y_vals = {previous_path_y[0], previous_path_y[1], previous_path_y[2]};
+            planning_pose = get_pose(next_x_vals, next_y_vals);
+            planning_pose.s = car_s + 0.04*car_speed;
           }
 
-          const double pre_planned_time = (next_x_vals.size() - 1) * DT;
-          const double T = 1 - pre_planned_time;
-          //double s_last = getFrenet(last_x, last_y, car_yaw, map_waypoints_x, map_waypoints_y)[0];
-          double s_last = car_s + pre_planned_time*car_speed;
-          double s_end = s_last + GOAL_SPEED * T;
-          vector<double> end_point = get_cartesian(s_end, d, spline_x, spline_y);
-          double end_x = end_point[0];
-          double end_y = end_point[1];
-          if (distance(last_x, last_y, end_x, end_y) > 3) {
-            cout << "boink!" << endl;
-          }
-          cout << "T: " << T << ", s_last: " << s_last << ", s_end: " << s_end << endl;
-          vector<double> end_point1 = get_cartesian(s_end+GOAL_SPEED*DT, d, spline_x, spline_y);
-          double end_x1 = end_point1[0];
-          double end_y1 = end_point1[1];
-          double end_x_dot = (end_x1 - end_x) / DT;
-          double end_y_dot = (end_y1 - end_y) / DT;
+          Plan best = planner.get_plan(planning_pose, predictions);
 
-          vector<double> start_x_v = {last_x, last_x_dot, last_x_ddot};
-          vector<double> end_x_v = {end_x, end_x_dot, 0.0};
-
-          vector<double> start_y_v = {last_y, last_y_dot, last_y_ddot};
-          vector<double> end_y_v = {end_y, end_y_dot, 0.0};
-
-
-          vector<double> a_x = JMT(start_x_v, end_x_v, T);
-          vector<double> a_y = JMT(start_y_v, end_y_v, T);
-
-          for (double t = DT; t < T; t += DT) {
-            next_x_vals.push_back(eval_poly(a_x, t));
-            next_y_vals.push_back(eval_poly(a_y, t));
-          }
-
-          /*double last_s = car_s;
-          double last_heading = car_yaw;
-          if (previous_path_y.size() >= 5) {
-            int prev_points = 5;
-            for (int i = 0; i < prev_points; i++) {
-              next_x_vals.push_back(previous_path_x[i]);
-              next_y_vals.push_back(previous_path_y[i]);
-            }
-
-            double last_x = previous_path_x[prev_points-1];
-            double last_y = previous_path_y[prev_points-1];
-            last_s = getFrenet(last_x, last_y, car_yaw, map_waypoints_x, map_waypoints_y)[0];
-          }
-
-          for (double s = last_s+0.4; s < last_s+15.0; s += 0.4) {
-            double x0 = spline_x(s);
-            double y0 = spline_y(s);
-            double ds = 0.01;
-            double x1 = spline_x(s+ds);
-            double y1 = spline_y(s+ds);
-            double d_heading = atan2(y1-y0, x1-x0) - M_PI/2.0;
-            double x = x0 + cos(d_heading)*d;
-            double y = y0 + sin(d_heading)*d;
-            cout << "d_heading(" << s << "): " << d_heading << ", cos: " << cos(d_heading) << ", sin: " << sin(d_heading) << ", (" << x << "," << y << ")" << endl;
+          for (double x : best.x) {
             next_x_vals.push_back(x);
+          }
+          for (double y : best.y) {
             next_y_vals.push_back(y);
-          }*/
-
-          cout << next_x_vals.size() << ", " << next_y_vals.size() << endl;
+          }
 
           // TODO: define a path made up of (x,y) points that the car will visit sequentially every .02 seconds
           msgJson["next_x"] = next_x_vals;
