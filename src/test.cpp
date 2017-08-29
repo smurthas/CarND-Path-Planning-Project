@@ -45,7 +45,7 @@ int main() {
   planning_pose.s = 0;
 
   vector<PredictedObject> predictions;
-  Plan best = planner.get_plan(planning_pose, predictions);
+  Plan best = planner.get_plan(planning_pose, predictions, 0);
 
   cout << "best: " << best << endl;
 

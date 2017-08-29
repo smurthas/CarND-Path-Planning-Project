@@ -41,9 +41,6 @@ string hasData(string s) {
   return "";
 }
 
-double distance(double x1, double y1, double x2, double y2) {
-  return sqrt((x2-x1)*(x2-x1)+(y2-y1)*(y2-y1));
-}
 int ClosestWaypoint(double x, double y, vector<double> maps_x, vector<double> maps_y) {
 
   double closestLen = 100000; //large number
@@ -155,7 +152,7 @@ vector<double> getXY(double s, double d, vector<double> maps_s, vector<double> m
 }
 
 Pose get_pose(double x, double y, double speed, double yaw) {
-  cout << "get_pose 0" << endl;
+  //cout << "get_pose 0" << endl;
   Pose pose = {};
   pose.x = x;
   pose.y = y;
@@ -168,7 +165,7 @@ Pose get_pose(double x, double y, double speed, double yaw) {
 }
 
 Pose get_pose(vector<double> x, vector<double> y) {
-  cout << "get_pose 1" << endl;
+  //cout << "get_pose 1" << endl;
   Pose pose;
 
   double prev_x_dot = (double(x[1]) - double(x[0])) / DT;
@@ -244,13 +241,25 @@ int main() {
           vector<double> next_x_vals;
           vector<double> next_y_vals;
 
-          if (mesg_count < 10) {
+          Pose planning_pose = get_pose(car_x, car_y, car_speed, car_yaw);
+          planning_pose.s = car_s;
+          planning_pose.d = car_d;
+          Plan best = planner.get_plan(planning_pose, predictions, previous_path_x.size());
+          //cout << "best: " << best << endl;
+          for (const Pose& p : best.poses) {
+            next_x_vals.push_back(p.x);
+            next_y_vals.push_back(p.y);
+          }
+
+          /*if (mesg_count < 100) {
             cout << "mesg_count: " << mesg_count << endl;
             if (mesg_count == 0) {
               double s = car_s;
               double ds_step = 0;
-              for (int i = 0; i < 100; i++) {
-                ds_step += 0.001;
+              for (int i = 0; i < 1000; i++) {
+                if (ds_step < 0.42) {
+                  ds_step += 0.001;
+                }
                 s += ds_step;
                 Pose p = map.get_cartesian(s, car_d);
                 next_x_vals.push_back(p.x);
@@ -271,19 +280,17 @@ int main() {
             next_x_vals = {previous_path_x[0], previous_path_x[1], previous_path_x[2]};
             next_y_vals = {previous_path_y[0], previous_path_y[1], previous_path_y[2]};
             Pose planning_pose = get_pose(next_x_vals, next_y_vals);
-            cout << "planning pose: " <<planning_pose << endl;
+            //cout << "planning pose: " <<planning_pose << endl;
             double ds = distance(next_x_vals[0], next_y_vals[0], next_x_vals[2], next_y_vals[2]);
             planning_pose.s = car_s + ds;
 
-            Plan best = planner.get_plan(planning_pose, predictions);
-             //cout << "best: " << best << endl;
-            for (double x : best.x) {
-              next_x_vals.push_back(x);
+            Plan best = planner.get_plan(planning_pose, predictions, previous_path_x.size());
+            cout << "best: " << best << endl;
+            for (const Pose& p : best.poses) {
+              next_x_vals.push_back(p.x);
+              next_y_vals.push_back(p.y);
             }
-            for (double y : best.y) {
-              next_y_vals.push_back(y);
-            }
-          }
+          }*/
 
           msgJson["next_x"] = next_x_vals;
           msgJson["next_y"] = next_y_vals;
