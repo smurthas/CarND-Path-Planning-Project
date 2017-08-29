@@ -10,6 +10,7 @@
 #include "Eigen-3.3/Eigen/LU"*/
 #include "json.hpp"
 
+#include "helpers.h"
 #include "map.h"
 #include "planner.h"
 
@@ -155,7 +156,7 @@ vector<double> getXY(double s, double d, vector<double> maps_s, vector<double> m
 
 Pose get_pose(double x, double y, double speed, double yaw) {
   cout << "get_pose 0" << endl;
-  Pose pose;
+  Pose pose = {};
   pose.x = x;
   pose.y = y;
   pose.x_dot = cos(yaw)*speed;
@@ -185,47 +186,21 @@ Pose get_pose(vector<double> x, vector<double> y) {
 
 int main() {
   uWS::Hub h;
-
-  // Load up map values for waypoint's x,y,s and d normalized normal vectors
-  vector<double> map_waypoints_x;
-  vector<double> map_waypoints_y;
-  vector<double> map_waypoints_s;
-  vector<double> map_waypoints_dx;
-  vector<double> map_waypoints_dy;
-
   // Waypoint map to read from
   string map_file_ = "../data/highway_map.csv";
   // The max s value before wrapping around the track back to 0
   double max_s = 6945.554;
 
-  ifstream in_map_(map_file_.c_str(), ifstream::in);
-
-  string line;
-  while (getline(in_map_, line)) {
-    istringstream iss(line);
-    double x;
-    double y;
-    float s;
-    float d_x;
-    float d_y;
-    iss >> x;
-    iss >> y;
-    iss >> s;
-    iss >> d_x;
-    iss >> d_y;
-    map_waypoints_x.push_back(x);
-    map_waypoints_y.push_back(y);
-    map_waypoints_s.push_back(s);
-    map_waypoints_dx.push_back(d_x);
-    map_waypoints_dy.push_back(d_y);
-  }
-  Map map(map_waypoints_x, map_waypoints_y, map_waypoints_s);
+  Map map = load_map_from_file(map_file_);
   Planner planner(map, DT);
   Predictor predictor(map);
 
   double GOAL_SPEED = 2; // m/s
+  int mesg_count = 0;
+  Pose prev_pose = {};
+  Pose prev_prev_pose = {};
 
-  h.onMessage([&GOAL_SPEED,&predictor,&planner,&map_waypoints_x,&map_waypoints_y,&map_waypoints_s,&map_waypoints_dx,&map_waypoints_dy,&map](uWS::WebSocket<uWS::SERVER> ws, char *data, size_t length,
+  h.onMessage([&GOAL_SPEED,&prev_pose,&prev_prev_pose,&mesg_count,&predictor,&planner,&map](uWS::WebSocket<uWS::SERVER> ws, char *data, size_t length,
                      uWS::OpCode opCode) {
     // "42" at the start of the message means there's a websocket message event.
     // The 4 signifies a websocket message
@@ -265,69 +240,51 @@ int main() {
 
           vector<PredictedObject> predictions = predictor.get_predictions(sensor_fusion);
 
-          // TODO: move this to planner
-          /*vector<double> next_vehicle = { 100, 100, 100 };
-          for (auto vehicle : sensor_fusion) {
-            double s = vehicle[5];
-            double d = vehicle[6];
-            int lane = d / 4;
-            double s_ahead = s-car_s;
-            if (s_ahead > 0 && s_ahead < next_vehicle[lane]) {
-              next_vehicle[lane] = s_ahead;;
-            }
-          }
-
-          cout << "next vehicles: " << next_vehicle[0] << ',' << next_vehicle[1] << ',' << next_vehicle[2] << endl;
-          int current_lane = car_d / 4;
-          int goal_lane = current_lane;
-          double buffer = 30;
-          double change_min = 40;
-          if (next_vehicle[current_lane] < buffer) {
-            GOAL_SPEED -= 0.04;
-          } else if (GOAL_SPEED < 20) {
-            GOAL_SPEED += 0.03;
-          }
-
-          if (next_vehicle[1] > buffer) {
-            // prefer middle lane if room
-            goal_lane = 1;
-          } else if (current_lane == 1) {
-            if (next_vehicle[0] > change_min) {
-              goal_lane = 0;
-            } else if (next_vehicle[2] > change_min) {
-              goal_lane = 2;
-            }
-          }*/
-
           json msgJson;
-          vector<double> next_x_vals = {car_x};
-          vector<double> next_y_vals = {car_y};
+          vector<double> next_x_vals;
+          vector<double> next_y_vals;
 
-
-          // TODO: pick a lane
-          //double target_d = goal_lane * 4 + 2;
-          //double d = target_d; // + car_d) / 2.0;
-
-          Pose planning_pose = get_pose(car_x, car_y, car_speed, car_yaw);
-          planning_pose.s = car_s;
-
-          if (previous_path_x.size() > 2 && previous_path_y.size() > 2) {
+          if (mesg_count < 10) {
+            cout << "mesg_count: " << mesg_count << endl;
+            if (mesg_count == 0) {
+              double s = car_s;
+              double ds_step = 0;
+              for (int i = 0; i < 100; i++) {
+                ds_step += 0.001;
+                s += ds_step;
+                Pose p = map.get_cartesian(s, car_d);
+                next_x_vals.push_back(p.x);
+                next_y_vals.push_back(p.y);
+              }
+            } else {
+              cout << "push" << endl;
+              for(double x : previous_path_x) {
+                next_x_vals.push_back(x);
+              }
+              for(double y : previous_path_y) {
+                next_y_vals.push_back(y);
+              }
+              cout << "push_ed " << next_y_vals.size() << endl;
+            }
+            mesg_count++;
+          } else {
             next_x_vals = {previous_path_x[0], previous_path_x[1], previous_path_x[2]};
             next_y_vals = {previous_path_y[0], previous_path_y[1], previous_path_y[2]};
-            planning_pose = get_pose(next_x_vals, next_y_vals);
-            planning_pose.s = car_s + 0.04*car_speed;
+            Pose planning_pose = get_pose(next_x_vals, next_y_vals);
+            cout << "planning pose: " <<planning_pose << endl;
+            double ds = distance(next_x_vals[0], next_y_vals[0], next_x_vals[2], next_y_vals[2]);
+            planning_pose.s = car_s + ds;
+
+            Plan best = planner.get_plan(planning_pose, predictions);
+             //cout << "best: " << best << endl;
+            for (double x : best.x) {
+              next_x_vals.push_back(x);
+            }
+            for (double y : best.y) {
+              next_y_vals.push_back(y);
+            }
           }
 
-          Plan best = planner.get_plan(planning_pose, predictions);
-
-          for (double x : best.x) {
-            next_x_vals.push_back(x);
-          }
-          for (double y : best.y) {
-            next_y_vals.push_back(y);
-          }
-
-          // TODO: define a path made up of (x,y) points that the car will visit sequentially every .02 seconds
           msgJson["next_x"] = next_x_vals;
           msgJson["next_y"] = next_y_vals;
 

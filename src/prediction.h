@@ -21,7 +21,7 @@ class Predictor {
  public:
   Predictor(const Map& _map) : map(_map) {}
 
-  vector<PredictedObject> get_predictions(vector<vector<double>> sensor_input) {
+  vector<PredictedObject> get_predictions(vector<vector<double> > sensor_input) {
     vector<PredictedObject> predictions;
 
     for (auto vehicle : sensor_input) {
@@ -35,6 +35,8 @@ class Predictor {
       Pose now;
       now.x = vehicle[1];
       now.y = vehicle[2];
+      now.s = s;
+      now.d = d;
       car.poses = {now};
       // just hold lane for now
       for (double t = 0.02; t <= 1; t += 0.02) {

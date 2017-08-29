@@ -11,6 +11,9 @@
 using namespace std;
 
 class Map {
+  vector<double> waypoints_x;
+  vector<double> waypoints_y;
+  vector<double> waypoints_s;
 
   tk::spline spline_x;
   tk::spline spline_y;
@@ -19,12 +22,24 @@ class Map {
   Map(const Map& other) {
     this->spline_x = other.spline_x;
     this->spline_y = other.spline_y;
+    this->waypoints_x = other.waypoints_x;
+    this->waypoints_y = other.waypoints_y;
+    this->waypoints_s = other.waypoints_s;
   }
 
   Map(vector<double> waypoints_x, vector<double> waypoints_y,
       vector<double> waypoints_s) {
+    this->waypoints_x = waypoints_x;
+    this->waypoints_y = waypoints_y;
+    this->waypoints_s = waypoints_s;
     spline_x.set_points(waypoints_s, waypoints_x);
     spline_y.set_points(waypoints_s, waypoints_y);
+  }
+
+  double get_d_from_x_y_s(double x, double y, double s) {
+    double dx = spline_x(s) - x;
+    double dy = spline_y(s) - y;
+    return sqrt(dx*dx + dy*dy);
   }
 
   Pose get_cartesian(double s, double d) {
@@ -39,6 +54,8 @@ class Map {
     p.y = y0 + sin(d_heading)*d;
     return p;
   }
+
+  //Pose
 };
 
 #endif
