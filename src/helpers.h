@@ -1,3 +1,7 @@
+#ifndef __HELPERS__
+#define __HELPERS__
+
+
 #include <fstream>
 #include <math.h>
 //#include <uWS/uWS.h>
@@ -11,6 +15,25 @@
 #include <sstream>
 
 using namespace std;
+
+double distance(double x1, double y1, double x2, double y2) {
+  return sqrt((x2-x1)*(x2-x1)+(y2-y1)*(y2-y1));
+}
+
+// minimum distance from a line segment represented by [(vx, vy), (wx, wy)] to a
+// point (px, py)
+double min_distance(double vx, double vy, double wx, double wy, double px, double py) {
+  const double l2 = pow(distance(vx, vy, wx, wy), 2);
+  if (l2 < 0.0001) {
+    return distance(vx, vy, px, py);
+  }
+
+  double t = ((px - vx) * (wx - vx) + (py - vy) * (wy - vy)) / l2;
+  t = max(0.0, min(1.0, t));
+  double qx = vx + t * (wx - vx);
+  double qy = vy + t * (wy - vy);
+  return distance(px, py, qx, qy);
+}
 
 Map load_map_from_file(string map_file_) {
   // Load up map values for waypoint's x,y,s and d normalized normal vectors
@@ -44,3 +67,5 @@ Map load_map_from_file(string map_file_) {
   Map map(map_waypoints_x, map_waypoints_y, map_waypoints_s);
   return map;
 }
+
+#endif
