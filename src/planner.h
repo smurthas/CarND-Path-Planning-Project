@@ -12,24 +12,12 @@
 #include "pose.h"
 
 using namespace std;
-//using namespace Eigen;
 
 enum class Intent {
   HOLD,
-  PREP_LC_L,
-  PREP_LC_R,
+  PREP_LC,
   LC,
 };
-
-std::ostream& operator << (std::ostream& os, const vector<double>& v) {
-  for (int i = 0; i < v.size(); i++) {
-    os << v[i];
-    if (i < v.size() - 1) {
-      os  << ", ";
-    }
-  }
-  return os;
-}
 
 std::ostream& operator << (std::ostream& os, const Intent& i) {
   string output = "unknown";
@@ -38,12 +26,8 @@ std::ostream& operator << (std::ostream& os, const Intent& i) {
       output = "HOLD";
       break;
 
-    case Intent::PREP_LC_L:
-      output = "PREP_LC_L";
-      break;
-
-    case Intent::PREP_LC_R:
-      output = "PREP_LC_R";
+    case Intent::PREP_LC:
+      output = "PREP_LC";
       break;
 
     case Intent::LC:
@@ -162,15 +146,22 @@ class Planner {
     double d = pose.d;
     double ds_step = 0;
     double ds_goal = goal_speed*DT;
-    if (prev_plan.poses.size() > 0) {
-      s = prev_plan.poses[prev_plan.poses.size()-1].s;
-      d = prev_plan.poses[prev_plan.poses.size()-1].d;
+
+    // First, inherit existing plan
+    Plan plan;
+    for (const Pose& p : prev_plan.poses) {
+      plan.poses.push_back(p);
     }
-    if (prev_plan.poses.size() > 1) {
-      ds_step = prev_plan.poses[prev_plan.poses.size()-1].s -
-                prev_plan.poses[prev_plan.poses.size()-2].s;
+
+    if (plan.poses.size() > 0) {
+      s = plan.poses[plan.poses.size()-1].s;
+      d = plan.poses[plan.poses.size()-1].d;
     }
-    while (prev_plan.poses.size() < 100) {
+    if (plan.poses.size() > 1) {
+      ds_step = plan.poses[plan.poses.size()-1].s -
+                plan.poses[plan.poses.size()-2].s;
+    }
+    while (plan.poses.size() < 100) {
       if (ds_step < ds_goal) {
         ds_step += 0.001;
       } else if (ds_step > ds_goal) {
@@ -178,9 +169,27 @@ class Planner {
       }
       s += ds_step;
       Pose p = map.get_cartesian(s, d);
-      prev_plan.poses.push_back(p);
+      plan.poses.push_back(p);
     }
-    return prev_plan;
+    return plan;
+  }
+
+  int collides(const Plan& plan, const vector<PredictedObject>& predictions) {
+    const double MIN_S_GAP = 10;
+    const double MIN_D_GAP = 3;
+    for (int i = 0; i < plan.poses.size(); i++) {
+      const Pose& ego_pose = plan.poses[i];
+      for (const PredictedObject& obj : predictions) {
+        const Pose& obj_pose = obj.poses[i];
+        double ds = abs(obj_pose.s - ego_pose.s);
+        double dd = abs(obj_pose.d - ego_pose.d);
+        if (ds < MIN_S_GAP && dd < MIN_D_GAP) {
+          return obj.id;
+        }
+      }
+    }
+
+    return -1;
   }
 
   Plan get_lane_change_plan(const Pose& pose, int goal_lane, double goal_speed) {
@@ -189,40 +198,44 @@ class Planner {
     double ds_step = 0;
     double dd_step = 0;
     double goal_d = goal_lane * 4.0 + 2.0;
-    cout << "s: " << s << endl;
-    cout << "d: " << d << endl;
-    cout << "ds_step: " << ds_step << endl;
-    cout << "dd_step: " << dd_step << endl;
-    cout << "goal_d: " << goal_d << endl;
+    double goal_ds_step = goal_speed*DT;
 
-    if (prev_plan.poses.size() > 0) {
-      s = prev_plan.poses[prev_plan.poses.size()-1].s;
-      d = prev_plan.poses[prev_plan.poses.size()-1].d;
+    // First, inherit existing plan
+    Plan plan;
+    for (const Pose& p : prev_plan.poses) {
+      plan.poses.push_back(p);
+      // only keep 10 prev poses during LC
+      if (plan.poses.size() > 10) {
+        break;
+      }
     }
-    if (prev_plan.poses.size() > 1) {
-      dd_step = prev_plan.poses[prev_plan.poses.size()-1].d -
-                prev_plan.poses[prev_plan.poses.size()-2].d;
-      ds_step = prev_plan.poses[prev_plan.poses.size()-1].s -
-                prev_plan.poses[prev_plan.poses.size()-2].s;
+
+    if (plan.poses.size() > 0) {
+      s = plan.poses[plan.poses.size()-1].s;
+      d = plan.poses[plan.poses.size()-1].d;
     }
-    cout << "s: " << s << endl;
-    cout << "d: " << d << endl;
-    cout << "ds_step: " << ds_step << endl;
-    cout << "dd_step: " << dd_step << endl;
-    const double T = 4.0;
+    if (plan.poses.size() > 1) {
+      dd_step = plan.poses[plan.poses.size()-1].d -
+                plan.poses[plan.poses.size()-2].d;
+      ds_step = plan.poses[plan.poses.size()-1].s -
+                plan.poses[plan.poses.size()-2].s;
+    }
+
+    const double T = 3.0;
     vector<double> a_d = JMT({d, 0.0, 0.0}, {goal_d, 0.0, 0.0}, T);
     for (double t = DT; t < T; t += DT) {
       double d_step = eval_poly(a_d, t);
       s += ds_step;
-      prev_plan.poses.push_back(map.get_cartesian(s, d_step));
+      plan.poses.push_back(map.get_cartesian(s, d_step));
+      if (ds_step < goal_ds_step) {
+        ds_step += 0.001;
+      }
     }
 
-    cout << "prev_plan.poses.size(): " << prev_plan.poses.size() << endl;
-    return prev_plan;
+    return plan;
   }
 
   Plan get_plan(const Pose& pose, double s_end, double d_end, double end_speed, double T) {
-    //cout << "s_end: " << s_end << ", d_end: " << d_end << endl;
     Pose end_pose = map.get_cartesian(s_end, d_end);
     Pose end_pose1 = map.get_cartesian(s_end+end_speed*DT, d_end);
     double end_x_dot = (end_pose1.x - end_pose.x) / DT;
@@ -233,12 +246,6 @@ class Planner {
 
     vector<double> start_y_v = {pose.y, pose.y_dot, pose.y_ddot};
     vector<double> end_y_v = {end_pose.y, end_y_dot, 0.0};
-
-    //cout << "start_x_v: " << start_x_v << endl;
-    //cout << "end_x_v: " << end_x_v << endl;
-
-    //cout << "start_y_v: " << start_y_v << endl;
-    //cout << "end_y_v: " << end_y_v << endl;
 
     vector<double> a_x = JMT(start_x_v, end_x_v, T);
     vector<double> a_y = JMT(start_y_v, end_y_v, T);
@@ -255,80 +262,6 @@ class Planner {
     return p;
   }
 
-  double plan_cost(const Plan& plan, double start_s, const vector<PredictedObject>& predictions) {
-    const double count = plan.poses.size();
-    const double SPEED_LIMIT = 21;
-    double speed_cost = 0;
-    for (int i = 1; i < count; i++) {
-      const Pose p1 = plan.poses[i-1];
-      const Pose p2 = plan.poses[i];
-      const double spd = speed(p2, p1);
-      //cout << "spd: " << spd << endl;
-      if (spd > SPEED_LIMIT) {
-        speed_cost += pow(spd - SPEED_LIMIT, 8);
-      } else {
-        speed_cost += pow(SPEED_LIMIT - spd, 2);
-      }
-    }
-
-    //double gap_cost = 0.0;
-    //for (int i = 0;  )
-
-    const double ACCEL_MAX = 8;
-    double accel_cost = 0;
-    vector<double> accels;
-    for (int i = 2; i < count; i++) {
-      const Pose p1 = plan.poses[i-2];
-      const Pose p2 = plan.poses[i-1];
-      const Pose p3 = plan.poses[i];
-      const double a = accel(p1, p2, p3);
-      //cout << "a: " << a << endl;
-      accels.push_back(a);
-      if (a > ACCEL_MAX) {
-        accel_cost += pow(a, 8);
-      } else {
-        accel_cost += pow(a, 4) / 100.0;
-      }
-    }
-
-    const double JERK_MAX = 20;
-    double jerk_cost = 0;
-    for (int i = 0; i < accels.size() - 1; i++) {
-      const double jerk = abs(accels[i+1] - accels[i])/ DT;
-      //cout << "jerk: " << jerk << endl;
-      if (jerk > JERK_MAX ) {
-        jerk_cost += pow(jerk, 8);
-      } else {
-        jerk_cost += jerk;
-      }
-    }
-
-    // CTE cost
-    double CTE_cost = 0;
-    vector<double> CTEs(count);
-    double s = start_s;
-    for (int i = 0; i < count; i++) {
-      double d = map.get_d_from_x_y_s(plan.poses[i].x, plan.poses[i].y, s);
-      int lane = max(0, min(2, (int)d/4));
-      double lane_d = lane*4.0;
-      double CTE = abs(lane_d - d);
-      CTE_cost += CTE;
-      if (i < count-1) {
-        s += distance(plan.poses[i], plan.poses[i+1]);
-      }
-    }
-
-    speed_cost /= count;
-    CTE_cost /= count;
-    accel_cost /= count - 1;
-    jerk_cost /= count - 2;
-    double total_cost = speed_cost + CTE_cost + accel_cost + jerk_cost;
-    /*cout << "cost(" << total_cost << "): " << speed_cost << ", " <<
-                                              CTE_cost << ", " <<
-                                              accel_cost << ", " <<
-                                              jerk_cost << endl;*/
-    return total_cost;
-  }
 
   double speed_ahead_in_lane(const double s, const int lane,
       const vector<PredictedObject>& predictions, int time_step) {
@@ -340,7 +273,6 @@ class Planner {
   double distance_ahead_in_lane(const double s, const int lane,
       const vector<PredictedObject>& predictions, int time_step) {
     double distance_ahead = 100000;
-    //const int lane = pose.d/4;
     for (const PredictedObject& prediction : predictions) {
       Pose car_pose = prediction.poses[time_step];
       const int car_lane = car_pose.d / 4;
@@ -358,41 +290,39 @@ class Planner {
   Intent get_intent(const Pose& pose, const vector<PredictedObject>& predictions) {
     const double buffer = 80;
     const int lane = pose.d / 4;
+
     Intent intent = prev_intent;
+
+    // calculate free time ahead
+    double distance_ahead[3] = {
+      distance_ahead_in_lane(pose.s, 0, predictions, 0),
+      distance_ahead_in_lane(pose.s, 1, predictions, 0),
+      distance_ahead_in_lane(pose.s, 2, predictions, 0),
+    };
+
+    int best_lane = 0;
+    if (distance_ahead[1] < distance_ahead[0]) {
+      best_lane = 1;
+    }
+    if (distance_ahead[2] < distance_ahead[best_lane]) {
+      best_lane = 2;
+    }
+
     // state machine for intent
-    // TODO: change lane if adjacent gap is bigger than current gap
     if (prev_intent == Intent::HOLD) {
-      // calculate free time ahead
-      double distance_ahead[3] = {
-        distance_ahead_in_lane(pose.s, 0, predictions, 0),
-        distance_ahead_in_lane(pose.s, 1, predictions, 0),
-        distance_ahead_in_lane(pose.s, 2, predictions, 0),
-      };
       if (distance_ahead[lane] < buffer) {
-        // PREP_LC
-        if (lane == 0 && distance_ahead[1] > buffer) {
-          intent = Intent::PREP_LC_R;
-          goal_lane = 1;
-        } else if (lane == 1) {
-          if (distance_ahead[0] > buffer) {
-            intent = Intent::PREP_LC_L;
-            goal_lane = 0;
-          } else if (distance_ahead[2] > buffer) {
-            intent = Intent::PREP_LC_R;
-            goal_lane = 2;
-          }
-        } else if (lane == 2 && distance_ahead[1] > buffer) {
-          intent = Intent::PREP_LC_L;
-          goal_lane = 1;
-        }
+        intent = Intent::PREP_LC;
       }
-    } else if (prev_intent == Intent::PREP_LC_L || prev_intent == Intent::PREP_LC_R) {
-      intent = Intent::LC;
+    } else if (prev_intent == Intent::PREP_LC) {
+      if (distance_ahead[lane] > buffer + 5) {
+        intent = Intent:: HOLD;
+      }
     } else if (prev_intent == Intent::LC) {
       if (lane == goal_lane) {
         intent = Intent::HOLD;
       }
     }
+
 
     return intent;
   }
@@ -402,9 +332,6 @@ class Planner {
     this->DT = DT;
   }
 
-  // need to know:
-  //  x, x', x''
-  //  y, y', y''
   Plan get_plan(const Pose& pose, const vector<PredictedObject>& predictions, int points_ahead) {
     const int lane = pose.d / 4;
     Intent intent = get_intent(pose, predictions);
@@ -417,25 +344,58 @@ class Planner {
       cout << "changed intent: " << prev_intent << "→" << intent << endl;
     }
 
+    double goal_speed = 20.0;
+    double distance_ahead[3] = {
+      distance_ahead_in_lane(pose.s, 0, predictions, 0),
+      distance_ahead_in_lane(pose.s, 1, predictions, 0),
+      distance_ahead_in_lane(pose.s, 2, predictions, 0),
+    };
+
+    //double distance_ahead = distance_ahead_in_lane(pose.s, lane, predictions, 0);
+    double lane_speed = speed_ahead_in_lane(pose.s, lane, predictions, 0);
+
+    if (distance_ahead[lane] < 20) {
+      goal_speed = lane_speed - 1.0;
+    } else if (distance_ahead[lane] < 40) {
+      goal_speed = lane_speed - 0.5;
+    }
+
+    Plan hold_lane_plan = get_hold_lane_plan(pose, goal_speed);
+
     Plan plan;
     const double car_speed = sqrt(pose.x_dot*pose.x_dot + pose.y_dot*pose.y_dot);
+
     if (intent == Intent::HOLD) {
-      double goal_speed = 20.0;
-      double distance_ahead = distance_ahead_in_lane(pose.s, lane, predictions, 0);
-      if (distance_ahead < 40) {
-        goal_speed = speed_ahead_in_lane(pose.s, lane, predictions, 0);
+      plan = hold_lane_plan;
+    } else if (intent == Intent::PREP_LC) {
+      const double switch_distance = distance_ahead[lane] + 5;
+      if (lane == 0 && distance_ahead[1] > switch_distance) {
+        goal_lane = 1;
+      } else if (lane == 1) {
+        if (distance_ahead[0] > switch_distance) {
+          goal_lane = 0;
+        } else if (distance_ahead[2] > switch_distance) {
+          goal_lane = 2;
+        }
+      } else if (lane == 2 && distance_ahead[1] > switch_distance) {
+        goal_lane = 1;
       }
-      plan = get_hold_lane_plan(pose, goal_speed);
-    } else if (intent == Intent::PREP_LC_R || intent == Intent::PREP_LC_L) {
-      // TODO: wait for a gap before commiting
-      plan = get_lane_change_plan(pose, goal_lane, car_speed);
-    } else if (intent == Intent::LC) {
-      if (lane == goal_lane) {
-        double goal_speed = 20.0;
-        plan = get_hold_lane_plan(pose, goal_speed);
+
+      if (goal_lane == lane) {
+        plan = hold_lane_plan;
       } else {
-        plan = prev_plan;
+        plan = get_lane_change_plan(pose, goal_lane, car_speed);
+        int collision_id = collides(plan, predictions);
+        if (collision_id != -1) {
+          plan = hold_lane_plan;
+        } else {
+          // do state transition here
+          cout << "made lane chng plan, PREP_LC→LC w goal lane " << goal_lane << endl;
+          intent = Intent::LC;
+        }
       }
+    } else if (intent == Intent::LC) {
+      plan = hold_lane_plan;
     }
 
     prev_intent = intent;
