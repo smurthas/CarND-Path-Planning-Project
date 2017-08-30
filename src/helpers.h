@@ -68,4 +68,17 @@ Map load_map_from_file(string map_file_) {
   return map;
 }
 
+std::ostream& operator << (std::ostream& os, const vector<double>& v) {
+  os << "[ ";
+  for (int i = 0; i < v.size(); i++) {
+    os << v[i];
+    if (i < v.size() - 1) {
+      os  << ", ";
+    }
+  }
+  os << " ]";
+  return os;
+}
+
+
 #endif

@@ -39,7 +39,7 @@ class Predictor {
       now.d = d;
       car.poses = {now};
       // just hold lane for now
-      for (double t = 0.02; t <= 1; t += 0.02) {
+      for (double t = 0.02; t <= 6; t += 0.02) {
         car.poses.push_back(map.get_cartesian(s + (ds_dt*t), d));
       }
       predictions.push_back(car);

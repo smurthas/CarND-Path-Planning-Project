@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "spline.h"
+#include "helpers.h"
 
 #include "pose.h"
 
@@ -30,10 +31,26 @@ class Map {
 
   Map(vector<double> waypoints_x, vector<double> waypoints_y,
       vector<double> waypoints_s) {
-    // TODO: wrap splines around so they are continuous
+    // wrap around
+    waypoints_s.insert(waypoints_s.begin(), waypoints_s[waypoints_s.size()-1]-max_s);
+    waypoints_s.insert(waypoints_s.begin(), waypoints_s[waypoints_s.size()-2]-max_s);
+    waypoints_s.push_back(max_s);
+    waypoints_s.push_back(max_s + waypoints_s[3]);
+
+    waypoints_x.insert(waypoints_x.begin(), waypoints_x[waypoints_x.size()-1]);
+    waypoints_x.insert(waypoints_x.begin(), waypoints_x[waypoints_x.size()-2]);
+    waypoints_x.push_back(waypoints_x[2]);
+    waypoints_x.push_back(waypoints_x[3]);
+
+    waypoints_y.insert(waypoints_y.begin(), waypoints_y[waypoints_y.size()-1]);
+    waypoints_y.insert(waypoints_y.begin(), waypoints_y[waypoints_y.size()-2]);
+    waypoints_y.push_back(waypoints_y[2]);
+    waypoints_y.push_back(waypoints_y[3]);
+
     this->waypoints_x = waypoints_x;
     this->waypoints_y = waypoints_y;
     this->waypoints_s = waypoints_s;
+
     spline_x.set_points(waypoints_s, waypoints_x);
     spline_y.set_points(waypoints_s, waypoints_y);
   }
