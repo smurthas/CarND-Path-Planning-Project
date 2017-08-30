@@ -140,6 +140,48 @@ class Planner {
     return sqrt(lon_accel*lon_accel + lat_accel*lat_accel);
   }
 
+  int collides(const Plan& plan, const vector<PredictedObject>& predictions) {
+    const double MIN_S_GAP = 10;
+    const double MIN_D_GAP = 3;
+    for (int i = 0; i < plan.poses.size(); i++) {
+      const Pose& ego_pose = plan.poses[i];
+      for (const PredictedObject& obj : predictions) {
+        const Pose& obj_pose = obj.poses[i];
+        double ds = abs(obj_pose.s - ego_pose.s);
+        double dd = abs(obj_pose.d - ego_pose.d);
+        if (ds < MIN_S_GAP && dd < MIN_D_GAP) {
+          return obj.id;
+        }
+      }
+    }
+
+    return -1;
+  }
+
+  double speed_ahead_in_lane(const double s, const int lane,
+      const vector<PredictedObject>& predictions, int time_step) {
+    double d1 = distance_ahead_in_lane(s, lane, predictions, time_step);
+    double d2 = distance_ahead_in_lane(s, lane, predictions, time_step+1);
+    return (d2-d1) / DT;
+  }
+
+  double distance_ahead_in_lane(const double s, const int lane,
+      const vector<PredictedObject>& predictions, int time_step) {
+    double distance_ahead = 100000;
+    for (const PredictedObject& prediction : predictions) {
+      Pose car_pose = prediction.poses[time_step];
+      const int car_lane = car_pose.d / 4;
+      if (car_lane == lane) {
+        double ahead = car_pose.s - s;
+        if (ahead > 0 && ahead < distance_ahead) {
+          distance_ahead = ahead;
+        }
+      }
+    }
+
+    return distance_ahead;
+  }
+
 
   Plan get_hold_lane_plan(const Pose& pose, double goal_speed) {
     double s = pose.s;
@@ -172,24 +214,6 @@ class Planner {
       plan.poses.push_back(p);
     }
     return plan;
-  }
-
-  int collides(const Plan& plan, const vector<PredictedObject>& predictions) {
-    const double MIN_S_GAP = 10;
-    const double MIN_D_GAP = 3;
-    for (int i = 0; i < plan.poses.size(); i++) {
-      const Pose& ego_pose = plan.poses[i];
-      for (const PredictedObject& obj : predictions) {
-        const Pose& obj_pose = obj.poses[i];
-        double ds = abs(obj_pose.s - ego_pose.s);
-        double dd = abs(obj_pose.d - ego_pose.d);
-        if (ds < MIN_S_GAP && dd < MIN_D_GAP) {
-          return obj.id;
-        }
-      }
-    }
-
-    return -1;
   }
 
   Plan get_lane_change_plan(const Pose& pose, int goal_lane, double goal_speed) {
@@ -232,59 +256,16 @@ class Planner {
       }
     }
 
-    return plan;
-  }
-
-  Plan get_plan(const Pose& pose, double s_end, double d_end, double end_speed, double T) {
-    Pose end_pose = map.get_cartesian(s_end, d_end);
-    Pose end_pose1 = map.get_cartesian(s_end+end_speed*DT, d_end);
-    double end_x_dot = (end_pose1.x - end_pose.x) / DT;
-    double end_y_dot = (end_pose1.y - end_pose.y) / DT;
-
-    vector<double> start_x_v = {pose.x, pose.x_dot, pose.x_ddot};
-    vector<double> end_x_v = {end_pose.x, end_x_dot, 0.0};
-
-    vector<double> start_y_v = {pose.y, pose.y_dot, pose.y_ddot};
-    vector<double> end_y_v = {end_pose.y, end_y_dot, 0.0};
-
-    vector<double> a_x = JMT(start_x_v, end_x_v, T);
-    vector<double> a_y = JMT(start_y_v, end_y_v, T);
-
-    Plan p;
-    for (double t = DT; t < T; t += DT) {
-      Pose pose;
-      pose.x = eval_poly(a_x, t);
-      pose.y = eval_poly(a_y, t);
-
-      p.poses.push_back(pose);
-    }
-
-    return p;
-  }
-
-
-  double speed_ahead_in_lane(const double s, const int lane,
-      const vector<PredictedObject>& predictions, int time_step) {
-    double d1 = distance_ahead_in_lane(s, lane, predictions, time_step);
-    double d2 = distance_ahead_in_lane(s, lane, predictions, time_step+1);
-    return (d2-d1) / DT;
-  }
-
-  double distance_ahead_in_lane(const double s, const int lane,
-      const vector<PredictedObject>& predictions, int time_step) {
-    double distance_ahead = 100000;
-    for (const PredictedObject& prediction : predictions) {
-      Pose car_pose = prediction.poses[time_step];
-      const int car_lane = car_pose.d / 4;
-      if (car_lane == lane) {
-        double ahead = car_pose.s - s;
-        if (ahead > 0 && ahead < distance_ahead) {
-          distance_ahead = ahead;
-        }
+    // add five lane center points to help us settle into the lane
+    for (int i = 0; i < 5; i++) {
+      s += ds_step;
+      plan.poses.push_back(map.get_cartesian(s, goal_d));
+      if (ds_step < goal_ds_step) {
+        ds_step += 0.001;
       }
     }
 
-    return distance_ahead;
+    return plan;
   }
 
   Intent get_intent(const Pose& pose, const vector<PredictedObject>& predictions) {
@@ -293,39 +274,34 @@ class Planner {
 
     Intent intent = prev_intent;
 
-    // calculate free time ahead
+    // calculate free space ahead
     double distance_ahead[3] = {
       distance_ahead_in_lane(pose.s, 0, predictions, 0),
       distance_ahead_in_lane(pose.s, 1, predictions, 0),
       distance_ahead_in_lane(pose.s, 2, predictions, 0),
     };
 
-    int best_lane = 0;
-    if (distance_ahead[1] < distance_ahead[0]) {
-      best_lane = 1;
-    }
-    if (distance_ahead[2] < distance_ahead[best_lane]) {
-      best_lane = 2;
-    }
-
-    // state machine for intent
     if (prev_intent == Intent::HOLD) {
+      // if we are closing in on a car, start looking for other lane options
       if (distance_ahead[lane] < buffer) {
         intent = Intent::PREP_LC;
       }
     } else if (prev_intent == Intent::PREP_LC) {
+      // if the gap to the car ahead has increased sufficiently, just return to
+      // holding our lane
       if (distance_ahead[lane] > buffer + 5) {
         intent = Intent:: HOLD;
       }
     } else if (prev_intent == Intent::LC) {
+      // if we've reached the goal lane, switch back to holding our lane
       if (lane == goal_lane) {
         intent = Intent::HOLD;
       }
     }
 
-
     return intent;
   }
+
 
  public:
   Planner(const Map& _map, const double DT) : map(_map) {
@@ -334,8 +310,10 @@ class Planner {
 
   Plan get_plan(const Pose& pose, const vector<PredictedObject>& predictions, int points_ahead) {
     const int lane = pose.d / 4;
+
     Intent intent = get_intent(pose, predictions);
-    // slice out old points
+
+    // slice out points that we have already passed
     while (prev_plan.poses.size() > points_ahead) {
       prev_plan.poses.erase(prev_plan.poses.begin());
     }
@@ -344,30 +322,36 @@ class Planner {
       cout << "changed intent: " << prev_intent << "→" << intent << endl;
     }
 
-    double goal_speed = 20.0;
+    double goal_speed = 20.0; // speed limit
+
+    // calculate the distance ahead in all three lanes
     double distance_ahead[3] = {
       distance_ahead_in_lane(pose.s, 0, predictions, 0),
       distance_ahead_in_lane(pose.s, 1, predictions, 0),
       distance_ahead_in_lane(pose.s, 2, predictions, 0),
     };
 
-    //double distance_ahead = distance_ahead_in_lane(pose.s, lane, predictions, 0);
     double lane_speed = speed_ahead_in_lane(pose.s, lane, predictions, 0);
 
+    // if we are closing in on another car, slow down to just below its speed
     if (distance_ahead[lane] < 20) {
       goal_speed = lane_speed - 1.0;
     } else if (distance_ahead[lane] < 40) {
       goal_speed = lane_speed - 0.5;
     }
 
-    Plan hold_lane_plan = get_hold_lane_plan(pose, goal_speed);
 
     Plan plan;
     const double car_speed = sqrt(pose.x_dot*pose.x_dot + pose.y_dot*pose.y_dot);
 
-    if (intent == Intent::HOLD) {
-      plan = hold_lane_plan;
+    if (intent == Intent::HOLD || intent == Intent::LC) {
+      // if we are mid lane change, then this is just planning our path once we
+      // arrive in the lane since we keep the previous plan poses
+      plan = get_hold_lane_plan(pose, goal_speed);
+
     } else if (intent == Intent::PREP_LC) {
+      // figure out if we should change lanes, only change lanes when an
+      // adjacent lane has a longer open distance ahead than the current lane
       const double switch_distance = distance_ahead[lane] + 5;
       if (lane == 0 && distance_ahead[1] > switch_distance) {
         goal_lane = 1;
@@ -382,22 +366,31 @@ class Planner {
       }
 
       if (goal_lane == lane) {
-        plan = hold_lane_plan;
+        // if we determine that the current lane is best, stick with that (but
+        // look again next time around)
+        plan = get_hold_lane_plan(pose, goal_speed);
       } else {
+        // generate a candidate plan to change lanes
         plan = get_lane_change_plan(pose, goal_lane, car_speed);
+
+        // check if that plan (nearly) collides with any other cars
         int collision_id = collides(plan, predictions);
         if (collision_id != -1) {
-          plan = hold_lane_plan;
+          // if it does, discard the plan and simply hold our lane. We'll try
+          // again next tick
+          plan = get_hold_lane_plan(pose, goal_speed);
         } else {
-          // do state transition here
+          // if no collision adopt the LC plan as the current plan and
+          // transition in the LC state
           cout << "made lane chng plan, PREP_LC→LC w goal lane " << goal_lane << endl;
+
+          // do state transition here
           intent = Intent::LC;
         }
       }
-    } else if (intent == Intent::LC) {
-      plan = hold_lane_plan;
     }
 
+    // save this intent and plan for next time
     prev_intent = intent;
     prev_plan = plan;
 
